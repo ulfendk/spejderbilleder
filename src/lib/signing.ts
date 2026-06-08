@@ -71,7 +71,7 @@ export async function getPublicSigningKeyJwk(signerId: string): Promise<JsonWebK
   const created = localStorage.getItem(`${PUBLIC_KEY_PREFIX}${signerId}`)
 
   if (created === null) {
-    throw new Error('Could not persist signing public key')
+    throw new Error('Kunne ikke gemme offentlig signeringsnøgle.')
   }
 
   return JSON.parse(created) as JsonWebKey

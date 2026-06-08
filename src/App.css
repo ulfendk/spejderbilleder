@@ -96,6 +96,11 @@ h1 {
   box-shadow: 0 4px 16px rgb(76 27 31 / 6%);
 }
 
+.auth-panel {
+  max-width: 560px;
+  margin: 0 auto;
+}
+
 .panel-toolbar {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -171,6 +176,37 @@ h1 {
   color: #5e4c4f;
 }
 
+.toggle-heading {
+  margin: 0 0 0.4rem;
+  font-weight: 700;
+  color: #5f2f33;
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.tag-toggle {
+  border: 1px solid #dcb8bb;
+  background: #fff;
+  color: #5f2f33;
+  padding: 0.3rem 0.6rem;
+  border-radius: 999px;
+}
+
+.tag-toggle:hover {
+  background: #fff2f3;
+  border-color: #c77d84;
+}
+
+.tag-toggle.is-active {
+  background: var(--ravn-red);
+  color: var(--ravn-white);
+  border-color: var(--ravn-red);
+}
+
 .signature-ok {
   color: #17603d;
   font-weight: 700;
@@ -185,6 +221,21 @@ h1 {
   margin-top: 1rem;
   display: flex;
   justify-content: center;
+}
+
+.details-panel {
+  border: 1px solid #ecd6d8;
+  border-radius: 0.65rem;
+  padding: 0.75rem;
+  background: #fff7f8;
+  margin-bottom: 1rem;
+}
+
+.details-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .form {
@@ -237,4 +288,40 @@ button:hover {
   border: 1px solid #e1c150;
   background: var(--ravn-yellow-soft);
   color: #5e3f00;
+}
+
+.feedback--error {
+  border-color: #d9a4a9;
+  background: #fff1f2;
+  color: #7c1825;
+}
+
+.candidate-list {
+  border: 1px solid #ecd6d8;
+  border-radius: 0.65rem;
+  padding: 0.75rem;
+  background: #fffdfd;
+}
+
+.candidate-list__items {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.candidate-card {
+  border: 1px solid #f0d8da;
+  border-radius: 0.55rem;
+  padding: 0.6rem;
+  background: #fff;
+}
+
+.candidate-card p {
+  margin: 0.12rem 0;
+}
+
+.app-footnote {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #6b4f53;
+  text-align: right;
 }

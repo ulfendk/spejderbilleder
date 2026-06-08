@@ -17,6 +17,8 @@ export interface GalleryIndexEntry {
   mimeType: string
   fileSizeBytes: number
   locationLabel?: string
+  locationLat?: number
+  locationLng?: number
   tags: string[]
   signatureValid: boolean
 }
@@ -25,7 +27,7 @@ function openIndexDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION)
     request.onerror = () => {
-      reject(new Error('Failed to open gallery index database.'))
+      reject(new Error('Kunne ikke åbne galleriindeks-databasen.'))
     }
     request.onupgradeneeded = () => {
       const db = request.result
@@ -60,7 +62,7 @@ export async function getGalleryIndexEntry(key: string): Promise<GalleryIndexEnt
       const store = transaction.objectStore(STORE_NAME)
       const request = store.get(key)
       request.onerror = () => {
-        reject(new Error('Failed to read from gallery index cache.'))
+        reject(new Error('Kunne ikke læse fra galleriindeks-cachen.'))
       }
       request.onsuccess = () => {
         const entry = request.result as GalleryIndexEntry | undefined
@@ -87,11 +89,11 @@ export async function putGalleryIndexEntry(entry: GalleryIndexEntry): Promise<vo
         schemaVersion: INDEX_SCHEMA_VERSION,
       } satisfies GalleryIndexEntry)
       request.onerror = () => {
-        reject(new Error('Failed to write gallery index cache entry.'))
+        reject(new Error('Kunne ikke skrive cachepost i galleriindekset.'))
       }
       transaction.oncomplete = () => resolve()
       transaction.onerror = () => {
-        reject(new Error('Failed to commit gallery index cache write.'))
+        reject(new Error('Kunne ikke fuldføre skrivning til galleriindeks-cachen.'))
       }
     })
   } finally {
@@ -107,11 +109,11 @@ export async function clearGalleryIndex(): Promise<void> {
       const store = transaction.objectStore(STORE_NAME)
       const request = store.clear()
       request.onerror = () => {
-        reject(new Error('Failed to clear gallery index cache.'))
+        reject(new Error('Kunne ikke rydde galleriindeks-cachen.'))
       }
       transaction.oncomplete = () => resolve()
       transaction.onerror = () => {
-        reject(new Error('Failed to commit gallery index cache clear.'))
+        reject(new Error('Kunne ikke fuldføre rydning af galleriindeks-cachen.'))
       }
     })
   } finally {

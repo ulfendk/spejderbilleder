@@ -6,7 +6,7 @@ const STORAGE_KEY = 'spejderbilleder:mock-storage:v1'
 function parseRecords(jsonValue: string): StoredMediaRecord[] {
   const parsed = JSON.parse(jsonValue) as unknown
   if (!Array.isArray(parsed)) {
-    throw new Error('Invalid mock storage state: expected array')
+    throw new Error('Ugyldig mock-lagertilstand: forventede en liste.')
   }
 
   return parsed as StoredMediaRecord[]

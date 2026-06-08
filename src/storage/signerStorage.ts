@@ -24,7 +24,7 @@ export class SignerStorageAdapter implements MediaStorageAdapter {
     })
 
     if (!response.ok) {
-      throw new Error(`Signer backend rejected upload (${response.status})`)
+      throw new Error(`Signer-backend afviste upload (${response.status})`)
     }
   }
 
@@ -34,7 +34,7 @@ export class SignerStorageAdapter implements MediaStorageAdapter {
     })
 
     if (!response.ok) {
-      throw new Error(`Signer backend failed to list media (${response.status})`)
+      throw new Error(`Signer-backend kunne ikke hente medielisten (${response.status})`)
     }
 
     const body = (await response.json()) as SignerApiListResponse

@@ -16,9 +16,14 @@ Current implementation is a secure MVP foundation.
 ### Frontend
 - Framework: React + TypeScript + Vite.
 - Host target: static hosting (e.g., GitHub Pages).
-- Main UI tabs:
-  - **Parent feed**: decrypts metadata and verifies signature.
-  - **Leader upload**: encrypts and signs media record before storage.
+- Access flow:
+  - **Passphrase gate** (login-style) appears before app tabs.
+  - Entered passphrase must decrypt all existing records to unlock UI (unless no records exist yet).
+- Main UI tabs after unlock:
+  - **Parent gallery**: image previews, date sorting (newest/oldest), fixed tag toggles, and per-item details panel.
+  - **Leader upload**: bulk upload with fixed tag selection and auto metadata extraction from selected files.
+- UI language: Danish.
+- Browser title is `Spejderbilleder`; optional branch reference is rendered as a UI footnote via `VITE_BRANCH_REF` (default `main`).
 
 ### Cryptography model
 - Per-upload random **file key** (`AES-GCM`).
@@ -59,6 +64,7 @@ Minimum API expected by current frontend:
 ## Key files
 
 - `src/App.tsx` — main UX and upload/feed workflows.
+- `src/lib/tags.ts` — fixed tag allowlist + normalization.
 - `src/lib/crypto.ts` — crypto primitives and key wrapping.
 - `src/lib/signing.ts` — canonical JSON signing/verification.
 - `src/lib/media.ts` — encrypt/sign and decrypt/verify pipeline.
