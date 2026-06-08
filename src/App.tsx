@@ -736,6 +736,14 @@ function App() {
   }
 
   async function handleClearIndex(): Promise<void> {
+    const confirmed = window.confirm(
+      'Er du sikker på, at du vil rydde det lokale lager?\n\nDette vil slette alle cachelagrede data, og metadata skal opbygges igen.'
+    )
+    
+    if (!confirmed) {
+      return
+    }
+
     try {
       await clearGalleryIndex()
       if (configuredBackend === 'mock') {
@@ -883,7 +891,15 @@ function App() {
           <p className="subtitle">Privatlivsfokuseret aktivitetsfeed for forældre og spejderledere.</p>
         </div>
         <div className="badges">
-          <span className="badge">Lager: {configuredBackend}</span>
+          <span
+            className={configuredBackend === 'mock' ? 'badge badge--clickable' : 'badge'}
+            onClick={configuredBackend === 'mock' ? () => void handleClearIndex() : undefined}
+            role={configuredBackend === 'mock' ? 'button' : undefined}
+            tabIndex={configuredBackend === 'mock' ? 0 : undefined}
+            title={configuredBackend === 'mock' ? 'Klik for at rydde lokalt lager' : undefined}
+          >
+            Lager: {configuredBackend}
+          </span>
           <span className="badge">Poster: {records.length}</span>
           <span className="badge">Synlige: {filteredAndSortedItems.length}</span>
         </div>
@@ -922,14 +938,17 @@ function App() {
                   <option value="date-asc">Ældste først</option>
                 </select>
               </label>
-              <button type="button" onClick={() => void refreshRecords()}>
-                Opdater
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => void refreshRecords()}
+                aria-label="Opdater"
+                title="Opdater"
+              >
+                <svg className="icon" aria-hidden="true">
+                  <use href="/icons.svg#refresh-icon" />
+                </svg>
               </button>
-              {configuredBackend === 'mock' ? (
-                <button type="button" onClick={() => void handleClearIndex()}>
-                  Ryd lokalt lager
-                </button>
-              ) : null}
             </div>
             <div className="toolbar-row">
               <p className="toggle-heading">Tags</p>

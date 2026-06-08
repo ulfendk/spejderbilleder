@@ -55,6 +55,21 @@ h1 {
   font-weight: 700;
 }
 
+.badge--clickable {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.badge--clickable:hover {
+  background: #ffe88e;
+  border-color: #c7a82f;
+  transform: translateY(-1px);
+}
+
+.badge--clickable:active {
+  transform: translateY(0);
+}
+
 .security-banner {
   background: var(--ravn-yellow-soft);
   border: 1px solid #cfb62d;
@@ -334,6 +349,22 @@ button {
 button:hover {
   background: var(--ravn-red-dark);
   border-color: var(--ravn-red-dark);
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0.5rem;
+  border-radius: 0.45rem;
+}
+
+.icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  display: block;
 }
 
 .feedback {
