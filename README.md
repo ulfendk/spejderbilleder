@@ -8,6 +8,13 @@ Privacy-first photo/video sharing for scouting groups.
 - Browser-side encryption for media metadata and chunks (`AES-GCM`).
 - Per-upload file key wrapped by a passphrase-derived group key (`PBKDF2 + AES-KW`).
 - Signed manifests (`ECDSA P-256`) so clients can verify uploader authenticity.
+- Parent gallery view with:
+  - image preview decryption (on-demand),
+  - sorting and filtering by date/time, location and tags,
+  - local IndexedDB gallery index for faster browsing of large record sets.
+- Leader upload metadata enhancements:
+  - optional capture time, location, and tags,
+  - EXIF-assisted prefill for image capture timestamp and GPS coordinates.
 - Pluggable storage backend selection:
   - `mock` (default): encrypted records in browser localStorage.
   - `s3-signer`: expects a private backend API to persist encrypted records.
@@ -53,5 +60,6 @@ Valid `VITE_STORAGE_BACKEND` values:
 - Object keys are random UUID based paths.
 - Feed decryption requires the shared passphrase.
 - Invalid signatures are surfaced in UI.
+- Sorting/filtering fields are cached in a local client-side index (IndexedDB) after decryption for performance; clear this cache from the feed toolbar if needed.
 
 See `AGENTS.md` for the backend contract and implementation guidance.
