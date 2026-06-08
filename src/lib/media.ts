@@ -1,5 +1,6 @@
 import {
   DEFAULT_CHUNK_SIZE_BYTES,
+  decryptAesGcm,
   decryptJson,
   deriveChunkNonce,
   deriveGroupKeyEncryptionKey,
@@ -30,11 +31,74 @@ export interface DecryptedRecordSummary {
   metadata: DecryptedMetadata
 }
 
+export interface DecryptedRecordMedia extends DecryptedRecordSummary {
+  blob: Blob | null
+}
+
 function buildUnsignedManifest(manifest: SignedMediaManifest): UnsignedMediaManifest {
   const { signatureB64, signerPublicKeyJwk, ...unsigned } = manifest
   void signatureB64
   void signerPublicKeyJwk
   return unsigned
+}
+
+function optionalTrimmed(value?: string): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+function optionalFinite(value?: number): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined
+  }
+  return value
+}
+
+function normalizeTags(tags?: string[]): string[] | undefined {
+  if (!Array.isArray(tags)) {
+    return undefined
+  }
+  const normalized = tags
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0)
+  return normalized.length > 0 ? normalized : undefined
+}
+
+interface VerifiedRecordContext {
+  signatureValid: boolean
+  metadata: DecryptedMetadata
+  fileKey: CryptoKey
+}
+
+async function verifyAndDecryptRecord(
+  record: StoredMediaRecord,
+  groupPassphrase: string,
+): Promise<VerifiedRecordContext> {
+  const groupKey = await deriveGroupKeyEncryptionKey(
+    groupPassphrase,
+    base64ToBytes(record.manifest.kekSaltB64),
+  )
+  const fileKey = await unwrapFileKey(record.manifest.wrappedFileKeyB64, groupKey)
+  const metadata = await decryptJson<DecryptedMetadata>(
+    record.manifest.metadata.nonceB64,
+    record.manifest.metadata.ciphertextB64,
+    fileKey,
+  )
+
+  const signatureValid = await verifyJsonSignature(
+    buildUnsignedManifest(record.manifest),
+    record.manifest.signatureB64,
+    record.manifest.signerPublicKeyJwk,
+  )
+
+  return {
+    signatureValid,
+    metadata,
+    fileKey,
+  }
 }
 
 export async function encryptAndSignMedia(input: UploadInput): Promise<StoredMediaRecord> {
@@ -55,6 +119,11 @@ export async function encryptAndSignMedia(input: UploadInput): Promise<StoredMed
       mimeType: input.file.type || 'application/octet-stream',
       fileSizeBytes: input.file.size,
       uploadedAtIso: new Date().toISOString(),
+      captureAtIso: optionalTrimmed(input.captureAtIso),
+      locationLabel: optionalTrimmed(input.locationLabel),
+      locationLat: optionalFinite(input.locationLat),
+      locationLng: optionalFinite(input.locationLng),
+      tags: normalizeTags(input.tags),
     },
     fileKey,
   )
@@ -119,25 +188,73 @@ export async function decryptRecordSummary(
   record: StoredMediaRecord,
   groupPassphrase: string,
 ): Promise<DecryptedRecordSummary> {
-  const groupKey = await deriveGroupKeyEncryptionKey(
-    groupPassphrase,
-    base64ToBytes(record.manifest.kekSaltB64),
-  )
-  const fileKey = await unwrapFileKey(record.manifest.wrappedFileKeyB64, groupKey)
-  const metadata = await decryptJson<DecryptedMetadata>(
-    record.manifest.metadata.nonceB64,
-    record.manifest.metadata.ciphertextB64,
-    fileKey,
-  )
-
-  const signatureValid = await verifyJsonSignature(
-    buildUnsignedManifest(record.manifest),
-    record.manifest.signatureB64,
-    record.manifest.signerPublicKeyJwk,
-  )
+  const context = await verifyAndDecryptRecord(record, groupPassphrase)
 
   return {
-    signatureValid,
+    signatureValid: context.signatureValid,
+    metadata: context.metadata,
+  }
+}
+
+export async function decryptRecordMedia(
+  record: StoredMediaRecord,
+  groupPassphrase: string,
+): Promise<DecryptedRecordMedia> {
+  const context = await verifyAndDecryptRecord(record, groupPassphrase)
+  if (!context.signatureValid) {
+    throw new Error('Signature is invalid for this media record.')
+  }
+
+  const { metadata } = context
+  if (!metadata.mimeType.startsWith('image/')) {
+    return {
+      signatureValid: context.signatureValid,
+      metadata,
+      blob: null,
+    }
+  }
+
+  const ciphertextByObjectKey = new Map(record.chunks.map((chunk) => [chunk.objectKey, chunk]))
+  const plaintextChunks: Uint8Array[] = []
+  let totalLength = 0
+
+  for (const manifestChunk of record.manifest.chunks) {
+    const encryptedChunk = ciphertextByObjectKey.get(manifestChunk.objectKey)
+    if (!encryptedChunk) {
+      throw new Error(`Missing chunk payload for ${manifestChunk.objectKey}.`)
+    }
+
+    const ciphertext = base64ToBytes(encryptedChunk.ciphertextB64)
+    const ciphertextDigest = await sha256Base64(ciphertext)
+    if (ciphertextDigest !== manifestChunk.ciphertextSha256B64) {
+      throw new Error(`Chunk integrity check failed for ${manifestChunk.objectKey}.`)
+    }
+
+    const plaintext = await decryptAesGcm(
+      ciphertext,
+      context.fileKey,
+      base64ToBytes(manifestChunk.nonceB64),
+    )
+    if (plaintext.byteLength !== manifestChunk.plaintextByteLength) {
+      throw new Error(`Unexpected plaintext length for ${manifestChunk.objectKey}.`)
+    }
+
+    plaintextChunks.push(plaintext)
+    totalLength += plaintext.byteLength
+  }
+
+  const merged = new Uint8Array(totalLength)
+  let offset = 0
+  for (const chunk of plaintextChunks) {
+    merged.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+
+  return {
+    signatureValid: context.signatureValid,
     metadata,
+    blob: new Blob([merged], {
+      type: metadata.mimeType || 'application/octet-stream',
+    }),
   }
 }

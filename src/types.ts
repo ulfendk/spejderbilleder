@@ -56,6 +56,11 @@ export interface DecryptedMetadata {
   mimeType: string
   fileSizeBytes: number
   uploadedAtIso: string
+  captureAtIso?: string
+  locationLabel?: string
+  locationLat?: number
+  locationLng?: number
+  tags?: string[]
 }
 
 export interface UploadInput {
@@ -65,4 +70,9 @@ export interface UploadInput {
   caption: string
   uploaderId: string
   groupPassphrase: string
+  captureAtIso?: string
+  locationLabel?: string
+  locationLat?: number
+  locationLng?: number
+  tags?: string[]
 }
