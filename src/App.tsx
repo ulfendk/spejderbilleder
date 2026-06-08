@@ -259,6 +259,9 @@ function App() {
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_COUNT)
   const [detailsMediaId, setDetailsMediaId] = useState<string | null>(null)
 
+  const [lightboxMediaId, setLightboxMediaId] = useState<string | null>(null)
+  const [showLightboxMetadata, setShowLightboxMetadata] = useState(false)
+
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({})
   const [previewLoading, setPreviewLoading] = useState<Record<string, boolean>>({})
   const [previewErrors, setPreviewErrors] = useState<Record<string, string>>({})
@@ -282,6 +285,16 @@ function App() {
   const detailsItem = useMemo(
     () => (detailsMediaId ? galleryItemByMediaId.get(detailsMediaId) : undefined),
     [detailsMediaId, galleryItemByMediaId],
+  )
+
+  const lightboxItem = useMemo(
+    () => (lightboxMediaId ? galleryItemByMediaId.get(lightboxMediaId) : undefined),
+    [lightboxMediaId, galleryItemByMediaId],
+  )
+
+  const lightboxIndex = useMemo(
+    () => (lightboxMediaId ? filteredAndSortedItems.findIndex((item) => item.mediaId === lightboxMediaId) : -1),
+    [lightboxMediaId, filteredAndSortedItems],
   )
 
   const revokePreviewUrls = useCallback(() => {
@@ -406,6 +419,27 @@ function App() {
       revokePreviewUrls()
     }
   }, [revokePreviewUrls])
+
+  useEffect(() => {
+    if (!lightboxMediaId) {
+      return
+    }
+
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape') {
+        handleLightboxClose()
+      } else if (event.key === 'ArrowLeft') {
+        handleLightboxPrevious()
+      } else if (event.key === 'ArrowRight') {
+        handleLightboxNext()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [lightboxMediaId])
 
   useEffect(() => {
     if (authState !== 'unlocked' || sessionPassphrase.length < 8 || records.length === 0) {
@@ -655,8 +689,11 @@ function App() {
     let successCount = 0
     const failedUploads: string[] = []
 
+    console.log(`Starting upload of ${uploadCandidates.length} files`)
+
     for (const candidate of uploadCandidates) {
       try {
+        console.log(`Encrypting and uploading: ${candidate.file.name}`)
         const record = await encryptAndSignMedia({
           file: candidate.file,
           eventId,
@@ -672,11 +709,15 @@ function App() {
         })
         await storageAdapter.save(record)
         successCount += 1
+        console.log(`Successfully uploaded: ${candidate.file.name} (${successCount}/${uploadCandidates.length})`)
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Uventet uploadfejl.'
+        console.error(`Failed to upload ${candidate.file.name}:`, error)
         failedUploads.push(`${candidate.file.name}: ${message}`)
       }
     }
+
+    console.log(`Upload complete. Success: ${successCount}, Failed: ${failedUploads.length}`)
 
     await refreshRecords()
     setUploadCandidates([])
@@ -697,10 +738,13 @@ function App() {
   async function handleClearIndex(): Promise<void> {
     try {
       await clearGalleryIndex()
+      if (configuredBackend === 'mock') {
+        localStorage.clear()
+      }
       await refreshRecords()
-      setFeedback('Lokalt galleriindeks ryddet. Metadata opbygges igen fra krypterede poster.')
+      setFeedback('Lokalt lager ryddet. Metadata opbygges igen fra krypterede poster.')
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : 'Kunne ikke rydde lokalt galleriindeks.')
+      setFeedback(error instanceof Error ? error.message : 'Kunne ikke rydde lokalt lager.')
     }
   }
 
@@ -716,6 +760,25 @@ function App() {
 
   function handleUploadTagToggle(tag: string): void {
     setSelectedUploadTags((current) => toggleTag(current, tag))
+  }
+
+  function handleLightboxPrevious(): void {
+    if (lightboxIndex > 0) {
+      setLightboxMediaId(filteredAndSortedItems[lightboxIndex - 1].mediaId)
+      setShowLightboxMetadata(false)
+    }
+  }
+
+  function handleLightboxNext(): void {
+    if (lightboxIndex < filteredAndSortedItems.length - 1) {
+      setLightboxMediaId(filteredAndSortedItems[lightboxIndex + 1].mediaId)
+      setShowLightboxMetadata(false)
+    }
+  }
+
+  function handleLightboxClose(): void {
+    setLightboxMediaId(null)
+    setShowLightboxMetadata(false)
   }
 
   async function handleFileSelection(fileList: FileList | null): Promise<void> {
@@ -879,9 +942,11 @@ function App() {
             <button type="button" onClick={() => void refreshRecords()}>
               Opdater
             </button>
-            <button type="button" onClick={() => void handleClearIndex()}>
-              Ryd lokalt indeks
-            </button>
+            {configuredBackend === 'mock' ? (
+              <button type="button" onClick={() => void handleClearIndex()}>
+                Ryd lokalt lager
+              </button>
+            ) : null}
           </div>
 
           {indexingProgress ? (
@@ -962,13 +1027,26 @@ function App() {
                         <p>{item.lockedReason}</p>
                       </div>
                     ) : (
-                      <div className="preview-box">
+                      <div className="preview-box" onClick={() => setLightboxMediaId(item.mediaId)}>
                         {isImage && previewUrl ? (
-                          <img
-                            src={previewUrl}
-                            alt={item.title ?? item.fileName ?? 'Uploadet billede'}
-                            loading="lazy"
-                          />
+                          <>
+                            <img
+                              src={previewUrl}
+                              alt={item.title ?? item.fileName ?? 'Uploadet billede'}
+                              loading="lazy"
+                            />
+                            <button
+                              type="button"
+                              className="info-icon-overlay"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                setDetailsMediaId(item.mediaId)
+                              }}
+                              aria-label="Vis detaljer"
+                            >
+                              i
+                            </button>
+                          </>
                         ) : isImage && isLoadingPreview ? (
                           <p>Indlæser forhåndsvisning...</p>
                         ) : isImage && previewError ? (
@@ -987,19 +1065,6 @@ function App() {
                         )}
                       </div>
                     )}
-
-                    <div className="card-meta">
-                      <span>{new Date(preferredTimestamp(item)).toLocaleString()}</span>
-                    </div>
-
-                    <h2>{item.title ?? 'Krypteret element'}</h2>
-                    {item.caption ? <p>{item.caption}</p> : null}
-
-                    {!item.lockedReason ? (
-                      <button type="button" onClick={() => setDetailsMediaId(item.mediaId)}>
-                        Detaljer
-                      </button>
-                    ) : null}
                   </article>
                 )
               })
@@ -1015,6 +1080,98 @@ function App() {
           ) : null}
 
           {feedback ? <p className="feedback">{feedback}</p> : null}
+
+          {lightboxMediaId && lightboxItem ? (
+            <div className="lightbox-overlay" onClick={handleLightboxClose}>
+              <div className="lightbox-content" onClick={(event) => event.stopPropagation()}>
+                <div className="lightbox-header">
+                  <div className="lightbox-position">
+                    {lightboxIndex + 1} af {filteredAndSortedItems.length}
+                  </div>
+                  <div className="lightbox-actions">
+                    <button
+                      type="button"
+                      className="lightbox-btn"
+                      onClick={() => setShowLightboxMetadata(!showLightboxMetadata)}
+                      aria-label="Vis/skjul metadata"
+                    >
+                      i
+                    </button>
+                    <button
+                      type="button"
+                      className="lightbox-btn"
+                      onClick={handleLightboxClose}
+                      aria-label="Luk"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+
+                <div className="lightbox-main">
+                  {lightboxIndex > 0 ? (
+                    <button
+                      type="button"
+                      className="lightbox-nav lightbox-nav--prev"
+                      onClick={handleLightboxPrevious}
+                      aria-label="Forrige"
+                    >
+                      ‹
+                    </button>
+                  ) : null}
+
+                  <div className="lightbox-image-container">
+                    {previewUrls[lightboxMediaId] ? (
+                      <img
+                        src={previewUrls[lightboxMediaId]}
+                        alt={lightboxItem.title ?? lightboxItem.fileName ?? 'Uploadet billede'}
+                      />
+                    ) : (
+                      <p>Indlæser billede...</p>
+                    )}
+                  </div>
+
+                  {lightboxIndex < filteredAndSortedItems.length - 1 ? (
+                    <button
+                      type="button"
+                      className="lightbox-nav lightbox-nav--next"
+                      onClick={handleLightboxNext}
+                      aria-label="Næste"
+                    >
+                      ›
+                    </button>
+                  ) : null}
+                </div>
+
+                {showLightboxMetadata && !lightboxItem.lockedReason ? (
+                  <div className="lightbox-metadata">
+                    <h3>{lightboxItem.title ?? 'Uden titel'}</h3>
+                    {lightboxItem.caption ? <p>{lightboxItem.caption}</p> : null}
+                    <dl>
+                      <dt>Aktivitet:</dt>
+                      <dd>{lightboxItem.eventId}</dd>
+                      <dt>Uploader:</dt>
+                      <dd>{lightboxItem.uploaderId}</dd>
+                      <dt>Uploadet:</dt>
+                      <dd>{new Date(lightboxItem.uploadedAtIso).toLocaleString()}</dd>
+                      <dt>Optaget:</dt>
+                      <dd>
+                        {lightboxItem.captureAtIso
+                          ? new Date(lightboxItem.captureAtIso).toLocaleString()
+                          : 'Ukendt'}
+                      </dd>
+                      {lightboxItem.tags.length > 0 ? (
+                        <>
+                          <dt>Tags:</dt>
+                          <dd>{lightboxItem.tags.join(', ')}</dd>
+                        </>
+                      ) : null}
+                    </dl>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </section>
       ) : (
         <section className="panel">
