@@ -18,6 +18,7 @@ import {
   signJson,
   verifyJsonSignature,
 } from './signing'
+import { normalizeScoutTags } from './tags'
 import type {
   DecryptedMetadata,
   SignedMediaManifest,
@@ -58,12 +59,7 @@ function optionalFinite(value?: number): number | undefined {
 }
 
 function normalizeTags(tags?: string[]): string[] | undefined {
-  if (!Array.isArray(tags)) {
-    return undefined
-  }
-  const normalized = tags
-    .map((tag) => tag.trim())
-    .filter((tag) => tag.length > 0)
+  const normalized = normalizeScoutTags(tags)
   return normalized.length > 0 ? normalized : undefined
 }
 
@@ -103,7 +99,7 @@ async function verifyAndDecryptRecord(
 
 export async function encryptAndSignMedia(input: UploadInput): Promise<StoredMediaRecord> {
   if (input.groupPassphrase.trim().length < 8) {
-    throw new Error('Group passphrase must be at least 8 characters')
+    throw new Error('Gruppeadgangskoden skal være mindst 8 tegn')
   }
 
   const mediaId = crypto.randomUUID()
@@ -202,7 +198,7 @@ export async function decryptRecordMedia(
 ): Promise<DecryptedRecordMedia> {
   const context = await verifyAndDecryptRecord(record, groupPassphrase)
   if (!context.signatureValid) {
-    throw new Error('Signature is invalid for this media record.')
+    throw new Error('Signaturen er ugyldig for denne mediepost.')
   }
 
   const { metadata } = context
@@ -221,13 +217,13 @@ export async function decryptRecordMedia(
   for (const manifestChunk of record.manifest.chunks) {
     const encryptedChunk = ciphertextByObjectKey.get(manifestChunk.objectKey)
     if (!encryptedChunk) {
-      throw new Error(`Missing chunk payload for ${manifestChunk.objectKey}.`)
+      throw new Error(`Manglende chunk-data for ${manifestChunk.objectKey}.`)
     }
 
     const ciphertext = base64ToBytes(encryptedChunk.ciphertextB64)
     const ciphertextDigest = await sha256Base64(ciphertext)
     if (ciphertextDigest !== manifestChunk.ciphertextSha256B64) {
-      throw new Error(`Chunk integrity check failed for ${manifestChunk.objectKey}.`)
+      throw new Error(`Integritetskontrol fejlede for ${manifestChunk.objectKey}.`)
     }
 
     const plaintext = await decryptAesGcm(
@@ -236,7 +232,7 @@ export async function decryptRecordMedia(
       base64ToBytes(manifestChunk.nonceB64),
     )
     if (plaintext.byteLength !== manifestChunk.plaintextByteLength) {
-      throw new Error(`Unexpected plaintext length for ${manifestChunk.objectKey}.`)
+      throw new Error(`Uventet klartekstlængde for ${manifestChunk.objectKey}.`)
     }
 
     plaintextChunks.push(plaintext)

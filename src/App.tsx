@@ -10,6 +10,7 @@ import {
   putGalleryIndexEntry,
 } from './lib/galleryIndex'
 import { decryptRecordMedia, decryptRecordSummary, encryptAndSignMedia } from './lib/media'
+import { SCOUT_TAGS, normalizeScoutTags } from './lib/tags'
 import { createStorageAdapter, readConfiguredBackend } from './storage/factory'
 import type { StoredMediaRecord, UserRole } from './types'
 
@@ -26,6 +27,8 @@ interface GalleryItem {
   signatureValid?: boolean
   captureAtIso?: string
   locationLabel?: string
+  locationLat?: number
+  locationLng?: number
   tags: string[]
   lockedReason?: string
 }
@@ -35,14 +38,6 @@ interface IndexingProgress {
   total: number
 }
 
-type SortOption =
-  | 'uploaded-desc'
-  | 'uploaded-asc'
-  | 'captured-desc'
-  | 'captured-asc'
-  | 'title-asc'
-  | 'location-asc'
-
 interface ParsedExif {
   DateTimeOriginal?: Date
   CreateDate?: Date
@@ -50,11 +45,34 @@ interface ParsedExif {
   longitude?: number
 }
 
+interface UploadAutoMetadata {
+  title: string
+  caption: string
+  captureAtIso?: string
+  locationLabel?: string
+  locationLat?: number
+  locationLng?: number
+}
+
+interface UploadCandidate {
+  id: string
+  file: File
+  metadata: UploadAutoMetadata
+  warning?: string
+}
+
+type SortOption = 'date-desc' | 'date-asc'
+type AuthState = 'locked' | 'validating' | 'unlocked'
+
 const configuredBackend = readConfiguredBackend()
 const storageAdapter = createStorageAdapter(configuredBackend)
 const INDEX_BATCH_SIZE = 25
 const INITIAL_VISIBLE_COUNT = 80
 const VISIBLE_INCREMENT = 80
+const branchReference =
+  typeof import.meta.env.VITE_BRANCH_REF === 'string' && import.meta.env.VITE_BRANCH_REF.trim().length > 0
+    ? import.meta.env.VITE_BRANCH_REF.trim()
+    : 'main'
 
 function normalizeEventId(value: string): string {
   const slug = value
@@ -64,7 +82,11 @@ function normalizeEventId(value: string): string {
     .replace(/^-+|-+$/g, '')
 
   const date = new Date().toISOString().slice(0, 10)
-  return `${slug || 'event'}-${date}`
+  return `${slug || 'aktivitet'}-${date}`
+}
+
+function buildAutoEventId(): string {
+  return normalizeEventId('masse-upload')
 }
 
 function formatBytes(bytes: number): string {
@@ -82,9 +104,9 @@ function formatBytes(bytes: number): string {
 
 function backendNotice(): string {
   if (configuredBackend === 'mock') {
-    return 'Demo mode: encrypted records are saved in browser localStorage only.'
+    return 'Demotilstand: krypterede poster gemmes kun i browserens localStorage.'
   }
-  return 'Signer mode: app expects a private backend at VITE_SIGNER_API_BASE for authenticated presigned storage access.'
+  return 'Signer-tilstand: appen forventer en privat backend på VITE_SIGNER_API_BASE til autentificeret, signeret lageradgang.'
 }
 
 function sortNewestFirst(records: StoredMediaRecord[]): StoredMediaRecord[] {
@@ -93,44 +115,74 @@ function sortNewestFirst(records: StoredMediaRecord[]): StoredMediaRecord[] {
   )
 }
 
-function normalizeTags(tags: string[]): string[] {
-  return Array.from(
-    new Set(
-      tags
-        .map((tag) => tag.trim().toLowerCase())
-        .filter((tag) => tag.length > 0),
-    ),
-  )
+function deriveTitleFromFileName(fileName: string): string {
+  const withoutExtension = fileName.replace(/\.[^.]+$/, '')
+  const normalized = withoutExtension.replace(/[_-]+/g, ' ').trim()
+  return normalized.length > 0 ? normalized : 'Upload uden titel'
 }
 
-function parseTagsInput(value: string): string[] {
-  return normalizeTags(value.split(','))
-}
+function buildBaseMetadata(file: File): UploadAutoMetadata {
+  const fallbackCapturedAt =
+    typeof file.lastModified === 'number' && file.lastModified > 0
+      ? new Date(file.lastModified).toISOString()
+      : undefined
 
-function toDateTimeLocalInputValue(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hours = String(date.getHours()).padStart(2, '0')
-  const minutes = String(date.getMinutes()).padStart(2, '0')
-  return `${year}-${month}-${day}T${hours}:${minutes}`
-}
-
-function parseCoordinate(value: string, label: string, min: number, max: number): number | undefined {
-  const trimmed = value.trim()
-  if (trimmed.length === 0) {
-    return undefined
+  return {
+    title: deriveTitleFromFileName(file.name),
+    caption: '',
+    captureAtIso: fallbackCapturedAt,
   }
-  const parsed = Number(trimmed)
-  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
-    throw new Error(`${label} must be a number between ${min} and ${max}.`)
-  }
-  return parsed
 }
 
-function optionalTrimmed(value: string): string | undefined {
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : undefined
+function buildUploadCandidateId(file: File, index: number): string {
+  return `${file.name}:${file.size}:${file.lastModified}:${index}`
+}
+
+async function extractAutoMetadata(file: File): Promise<{ metadata: UploadAutoMetadata; warning?: string }> {
+  const base = buildBaseMetadata(file)
+
+  if (!file.type.startsWith('image/')) {
+    return { metadata: base }
+  }
+
+  try {
+    const parsed = (await exifr.parse(file, {
+      pick: ['DateTimeOriginal', 'CreateDate', 'latitude', 'longitude'],
+    })) as ParsedExif | null
+
+    if (!parsed) {
+      return { metadata: base }
+    }
+
+    const candidateDate = parsed.DateTimeOriginal ?? parsed.CreateDate
+    const captureAtIso =
+      candidateDate instanceof Date && !Number.isNaN(candidateDate.getTime())
+        ? candidateDate.toISOString()
+        : base.captureAtIso
+
+    return {
+      metadata: {
+        ...base,
+        captureAtIso,
+        locationLat:
+          typeof parsed.latitude === 'number' && Number.isFinite(parsed.latitude)
+            ? parsed.latitude
+            : undefined,
+        locationLng:
+          typeof parsed.longitude === 'number' && Number.isFinite(parsed.longitude)
+            ? parsed.longitude
+            : undefined,
+      },
+    }
+  } catch (error) {
+    return {
+      metadata: base,
+      warning:
+        error instanceof Error
+          ? `Metadata-udtræk faldt tilbage til filværdier: ${error.message}`
+          : 'Metadata-udtræk faldt tilbage til filværdier for denne fil.',
+    }
+  }
 }
 
 async function fingerprintPassphrase(passphrase: string): Promise<string> {
@@ -170,37 +222,42 @@ function toGalleryItem(record: StoredMediaRecord, entry: GalleryIndexEntry): Gal
     signatureValid: entry.signatureValid,
     captureAtIso: entry.captureAtIso,
     locationLabel: entry.locationLabel,
-    tags: entry.tags,
+    locationLat: entry.locationLat,
+    locationLng: entry.locationLng,
+    tags: normalizeScoutTags(entry.tags),
   }
+}
+
+function toggleTag(currentTags: string[], targetTag: string): string[] {
+  if (currentTags.includes(targetTag)) {
+    return currentTags.filter((tag) => tag !== targetTag)
+  }
+  return [...currentTags, targetTag]
 }
 
 function App() {
   const [activeTab, setActiveTab] = useState<'feed' | 'upload'>('feed')
   const [records, setRecords] = useState<StoredMediaRecord[]>([])
+  const [recordsLoaded, setRecordsLoaded] = useState(false)
   const [galleryItems, setGalleryItems] = useState<GalleryItem[]>([])
   const [indexingProgress, setIndexingProgress] = useState<IndexingProgress | null>(null)
 
+  const [authState, setAuthState] = useState<AuthState>('locked')
+  const [passphraseInput, setPassphraseInput] = useState('')
+  const [sessionPassphrase, setSessionPassphrase] = useState('')
+  const [passphraseError, setPassphraseError] = useState('')
+
   const [role, setRole] = useState<UserRole>('leader')
-  const [uploaderId, setUploaderId] = useState('leader-lars')
-  const [eventTitle, setEventTitle] = useState('Monday campfire')
-  const [title, setTitle] = useState('Campfire songs at sunset')
-  const [caption, setCaption] = useState('The wolves practiced guitar and sang together.')
-  const [passphrase, setPassphrase] = useState('')
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [captureAtInput, setCaptureAtInput] = useState('')
-  const [locationLabel, setLocationLabel] = useState('')
-  const [locationLatInput, setLocationLatInput] = useState('')
-  const [locationLngInput, setLocationLngInput] = useState('')
-  const [tagsInput, setTagsInput] = useState('')
+  const [uploaderId, setUploaderId] = useState('')
+  const [selectedUploadTags, setSelectedUploadTags] = useState<string[]>([])
+  const [uploadCandidates, setUploadCandidates] = useState<UploadCandidate[]>([])
   const [feedback, setFeedback] = useState<string>('')
   const [fileInputResetKey, setFileInputResetKey] = useState(0)
 
-  const [sortOption, setSortOption] = useState<SortOption>('captured-desc')
-  const [locationFilter, setLocationFilter] = useState('')
-  const [tagsFilter, setTagsFilter] = useState('')
-  const [fromDateFilter, setFromDateFilter] = useState('')
-  const [toDateFilter, setToDateFilter] = useState('')
+  const [sortOption, setSortOption] = useState<SortOption>('date-desc')
+  const [activeTagFilters, setActiveTagFilters] = useState<string[]>([])
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_COUNT)
+  const [detailsMediaId, setDetailsMediaId] = useState<string | null>(null)
 
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({})
   const [previewLoading, setPreviewLoading] = useState<Record<string, boolean>>({})
@@ -209,18 +266,23 @@ function App() {
   const previewUrlMapRef = useRef<Map<string, string>>(new Map())
   const previewLoadingSetRef = useRef<Set<string>>(new Set())
   const previewErrorMapRef = useRef<Map<string, string>>(new Map())
+  const passphraseValidationAttemptRef = useRef(0)
+  const fileSelectionAttemptRef = useRef(0)
 
   const recordByMediaId = useMemo(
     () => new Map(records.map((record) => [record.manifest.mediaId, record])),
     [records],
   )
 
-  const activeTagFilters = useMemo(() => parseTagsInput(tagsFilter), [tagsFilter])
+  const galleryItemByMediaId = useMemo(
+    () => new Map(galleryItems.map((item) => [item.mediaId, item])),
+    [galleryItems],
+  )
 
-  const availableTags = useMemo(() => {
-    const allTags = galleryItems.flatMap((item) => item.tags)
-    return Array.from(new Set(allTags)).sort((left, right) => left.localeCompare(right))
-  }, [galleryItems])
+  const detailsItem = useMemo(
+    () => (detailsMediaId ? galleryItemByMediaId.get(detailsMediaId) : undefined),
+    [detailsMediaId, galleryItemByMediaId],
+  )
 
   const revokePreviewUrls = useCallback(() => {
     for (const url of previewUrlMapRef.current.values()) {
@@ -238,14 +300,32 @@ function App() {
     setPreviewErrors({})
   }, [revokePreviewUrls])
 
-  async function refreshRecords(): Promise<void> {
+  const refreshRecords = useCallback(async (): Promise<void> => {
     const listed = await storageAdapter.list()
     resetPreviewState()
     setRecords(sortNewestFirst(listed))
-  }
+    setRecordsLoaded(true)
+  }, [resetPreviewState])
+
+  const validatePassphraseForRecords = useCallback(
+    async (passphraseToCheck: string, recordsToCheck: StoredMediaRecord[]): Promise<boolean> => {
+      for (const record of recordsToCheck) {
+        try {
+          await decryptRecordSummary(record, passphraseToCheck)
+        } catch {
+          return false
+        }
+      }
+      return true
+    },
+    [],
+  )
 
   const loadPreview = useCallback(
     async (mediaId: string): Promise<void> => {
+      if (authState !== 'unlocked') {
+        return
+      }
       if (previewUrlMapRef.current.has(mediaId) || previewLoadingSetRef.current.has(mediaId)) {
         return
       }
@@ -255,7 +335,7 @@ function App() {
         return
       }
 
-      const trimmedPassphrase = passphrase.trim()
+      const trimmedPassphrase = sessionPassphrase.trim()
       if (trimmedPassphrase.length < 8) {
         return
       }
@@ -272,7 +352,7 @@ function App() {
       try {
         const media = await decryptRecordMedia(record, trimmedPassphrase)
         if (!media.blob) {
-          throw new Error('Preview is currently available for image files only.')
+          throw new Error('Forhåndsvisning er i øjeblikket kun tilgængelig for billedfiler.')
         }
         const objectUrl = URL.createObjectURL(media.blob)
         const previous = previewUrlMapRef.current.get(mediaId)
@@ -282,7 +362,7 @@ function App() {
         previewUrlMapRef.current.set(mediaId, objectUrl)
         setPreviewUrls((current) => ({ ...current, [mediaId]: objectUrl }))
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Could not load preview.'
+        const message = error instanceof Error ? error.message : 'Kunne ikke indlæse forhåndsvisning.'
         previewErrorMapRef.current.set(mediaId, message)
         setPreviewErrors((current) => ({ ...current, [mediaId]: message }))
       } finally {
@@ -294,7 +374,7 @@ function App() {
         })
       }
     },
-    [passphrase, recordByMediaId],
+    [authState, recordByMediaId, sessionPassphrase],
   )
 
   useEffect(() => {
@@ -306,11 +386,13 @@ function App() {
         if (!cancelled) {
           resetPreviewState()
           setRecords(sortNewestFirst(listed))
+          setRecordsLoaded(true)
         }
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setFeedback(error instanceof Error ? error.message : 'Failed to load records.')
+          setFeedback(error instanceof Error ? error.message : 'Kunne ikke indlæse poster.')
+          setRecordsLoaded(true)
         }
       })
 
@@ -326,9 +408,40 @@ function App() {
   }, [revokePreviewUrls])
 
   useEffect(() => {
+    if (authState !== 'unlocked' || sessionPassphrase.length < 8 || records.length === 0) {
+      return
+    }
+
+    let cancelled = false
+    void validatePassphraseForRecords(sessionPassphrase, records).then((matches) => {
+      if (cancelled || matches) {
+        return
+      }
+
+      setAuthState('locked')
+      setSessionPassphrase('')
+      setPassphraseError('Adgangskoden matcher ikke alle eksisterende fotos/videoer. Log ind igen.')
+      setActiveTab('feed')
+      setGalleryItems([])
+      setDetailsMediaId(null)
+      resetPreviewState()
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [authState, records, resetPreviewState, sessionPassphrase, validatePassphraseForRecords])
+
+  useEffect(() => {
     let cancelled = false
 
     async function rebuildGalleryItems(): Promise<void> {
+      if (authState !== 'unlocked') {
+        setGalleryItems([])
+        setIndexingProgress(null)
+        return
+      }
+
       const sortedRecords = sortNewestFirst(records)
       if (sortedRecords.length === 0) {
         setGalleryItems([])
@@ -336,13 +449,9 @@ function App() {
         return
       }
 
-      const trimmedPassphrase = passphrase.trim()
+      const trimmedPassphrase = sessionPassphrase.trim()
       if (trimmedPassphrase.length < 8) {
-        setGalleryItems(
-          sortedRecords.map((record) =>
-            buildLockedItem(record, 'Enter group passphrase (min. 8 chars) to unlock metadata.'),
-          ),
-        )
+        setGalleryItems([])
         setIndexingProgress(null)
         return
       }
@@ -376,15 +485,16 @@ function App() {
               mimeType: summary.metadata.mimeType,
               fileSizeBytes: summary.metadata.fileSizeBytes,
               locationLabel: summary.metadata.locationLabel,
-              tags: normalizeTags(summary.metadata.tags ?? []),
+              locationLat: summary.metadata.locationLat,
+              locationLng: summary.metadata.locationLng,
+              tags: normalizeScoutTags(summary.metadata.tags),
               signatureValid: summary.signatureValid,
             }
             await putGalleryIndexEntry(entry)
             nextItems.push(toGalleryItem(record, entry))
           }
         } catch (error) {
-          const reason =
-            error instanceof Error ? error.message : 'Could not decrypt with this passphrase.'
+          const reason = error instanceof Error ? error.message : 'Kunne ikke dekryptere med denne adgangskode.'
           nextItems.push(buildLockedItem(record, reason))
         }
 
@@ -406,7 +516,7 @@ function App() {
 
     void rebuildGalleryItems().catch((error: unknown) => {
       if (!cancelled) {
-        setFeedback(error instanceof Error ? error.message : 'Failed to build gallery index.')
+        setFeedback(error instanceof Error ? error.message : 'Kunne ikke opbygge galleriindeks.')
         setIndexingProgress(null)
       }
     })
@@ -414,38 +524,17 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [records, passphrase])
+  }, [authState, records, sessionPassphrase])
 
   const filteredAndSortedItems = useMemo(() => {
-    const hasMetadataFilter =
-      fromDateFilter.length > 0 ||
-      toDateFilter.length > 0 ||
-      locationFilter.trim().length > 0 ||
-      activeTagFilters.length > 0
-    const locationNeedle = locationFilter.trim().toLowerCase()
-    const fromIso = fromDateFilter ? new Date(fromDateFilter).toISOString() : undefined
-    const toIso = toDateFilter ? new Date(toDateFilter).toISOString() : undefined
-
     const filtered = galleryItems.filter((item) => {
       if (item.lockedReason) {
-        return !hasMetadataFilter
-      }
-
-      const timestamp = preferredTimestamp(item)
-      if (fromIso && timestamp < fromIso) {
-        return false
-      }
-      if (toIso && timestamp > toIso) {
-        return false
-      }
-
-      if (locationNeedle && !(item.locationLabel ?? '').toLowerCase().includes(locationNeedle)) {
-        return false
+        return activeTagFilters.length === 0
       }
 
       if (activeTagFilters.length > 0) {
         const tagSet = new Set(item.tags.map((tag) => tag.toLowerCase()))
-        if (!activeTagFilters.every((tag) => tagSet.has(tag))) {
+        if (!activeTagFilters.every((tag) => tagSet.has(tag.toLowerCase()))) {
           return false
         }
       }
@@ -454,24 +543,12 @@ function App() {
     })
 
     return filtered.sort((left, right) => {
-      switch (sortOption) {
-        case 'uploaded-asc':
-          return left.uploadedAtIso.localeCompare(right.uploadedAtIso)
-        case 'uploaded-desc':
-          return right.uploadedAtIso.localeCompare(left.uploadedAtIso)
-        case 'captured-asc':
-          return preferredTimestamp(left).localeCompare(preferredTimestamp(right))
-        case 'captured-desc':
-          return preferredTimestamp(right).localeCompare(preferredTimestamp(left))
-        case 'title-asc':
-          return (left.title ?? '').localeCompare(right.title ?? '')
-        case 'location-asc':
-          return (left.locationLabel ?? '').localeCompare(right.locationLabel ?? '')
-        default:
-          return 0
+      if (sortOption === 'date-asc') {
+        return preferredTimestamp(left).localeCompare(preferredTimestamp(right))
       }
+      return preferredTimestamp(right).localeCompare(preferredTimestamp(left))
     })
-  }, [activeTagFilters, fromDateFilter, galleryItems, locationFilter, sortOption, toDateFilter])
+  }, [activeTagFilters, galleryItems, sortOption])
 
   const visibleItems = useMemo(
     () => filteredAndSortedItems.slice(0, visibleCount),
@@ -499,76 +576,132 @@ function App() {
     }
   }, [visibleItems, loadPreview])
 
+  async function handlePassphraseSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    setPassphraseError('')
+    setFeedback('')
+
+    if (!recordsLoaded) {
+      setPassphraseError('Krypterede poster indlæses stadig. Vent et øjeblik og prøv igen.')
+      return
+    }
+
+    const trimmedPassphrase = passphraseInput.trim()
+    if (trimmedPassphrase.length < 8) {
+      setPassphraseError('Gruppens adgangskode skal være mindst 8 tegn.')
+      return
+    }
+
+    const attemptId = ++passphraseValidationAttemptRef.current
+    setAuthState('validating')
+
+    try {
+      const matchesAll =
+        records.length === 0
+          ? true
+          : await validatePassphraseForRecords(trimmedPassphrase, records)
+
+      if (attemptId !== passphraseValidationAttemptRef.current) {
+        return
+      }
+
+      if (!matchesAll) {
+        setAuthState('locked')
+        setPassphraseError('Adgangskoden matcher ikke alle eksisterende fotos/videoer.')
+        return
+      }
+
+      setSessionPassphrase(trimmedPassphrase)
+      setPassphraseInput('')
+      setPassphraseError('')
+      setAuthState('unlocked')
+    } catch (error) {
+      if (attemptId !== passphraseValidationAttemptRef.current) {
+        return
+      }
+      setAuthState('locked')
+      setPassphraseError(error instanceof Error ? error.message : 'Kunne ikke validere adgangskoden.')
+    }
+  }
+
   async function handleUploadSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
     setFeedback('')
 
+    if (authState !== 'unlocked') {
+      setFeedback('Indtast gruppens adgangskode før upload.')
+      return
+    }
+
     if (role !== 'leader') {
-      setFeedback('Only leaders can publish photos/videos.')
+      setFeedback('Kun ledere kan udgive fotos/videoer.')
       return
     }
 
-    if (selectedFile === null) {
-      setFeedback('Select a photo or video before uploading.')
+    const normalizedUploaderId = uploaderId.trim()
+    if (normalizedUploaderId.length === 0) {
+      setFeedback('Uploader-id er påkrævet.')
       return
     }
 
-    try {
-      const captureAtIso =
-        captureAtInput.trim().length > 0 ? new Date(captureAtInput).toISOString() : undefined
-      if (captureAtInput.trim().length > 0 && Number.isNaN(Date.parse(captureAtInput))) {
-        throw new Error('Capture date/time must be a valid value.')
+    if (uploadCandidates.length === 0) {
+      setFeedback('Vælg et eller flere fotos/videoer før upload.')
+      return
+    }
+
+    setFeedback('Krypterer og uploader valgte filer...')
+    const selectedTags = normalizeScoutTags(selectedUploadTags)
+    const eventId = buildAutoEventId()
+    let successCount = 0
+    const failedUploads: string[] = []
+
+    for (const candidate of uploadCandidates) {
+      try {
+        const record = await encryptAndSignMedia({
+          file: candidate.file,
+          eventId,
+          title: candidate.metadata.title,
+          caption: candidate.metadata.caption,
+          uploaderId: normalizedUploaderId,
+          groupPassphrase: sessionPassphrase,
+          captureAtIso: candidate.metadata.captureAtIso,
+          locationLabel: candidate.metadata.locationLabel,
+          locationLat: candidate.metadata.locationLat,
+          locationLng: candidate.metadata.locationLng,
+          tags: selectedTags,
+        })
+        await storageAdapter.save(record)
+        successCount += 1
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Uventet uploadfejl.'
+        failedUploads.push(`${candidate.file.name}: ${message}`)
       }
-
-      const locationLat = parseCoordinate(locationLatInput, 'Latitude', -90, 90)
-      const locationLng = parseCoordinate(locationLngInput, 'Longitude', -180, 180)
-      const tags = parseTagsInput(tagsInput)
-
-      setFeedback('Encrypting and uploading...')
-
-      const record = await encryptAndSignMedia({
-        file: selectedFile,
-        eventId: normalizeEventId(eventTitle),
-        title,
-        caption,
-        uploaderId,
-        groupPassphrase: passphrase,
-        captureAtIso,
-        locationLabel: optionalTrimmed(locationLabel),
-        locationLat,
-        locationLng,
-        tags,
-      })
-
-      await storageAdapter.save(record)
-      await refreshRecords()
-      setSelectedFile(null)
-      setCaptureAtInput('')
-      setLocationLabel('')
-      setLocationLatInput('')
-      setLocationLngInput('')
-      setTagsInput('')
-      setFileInputResetKey((value) => value + 1)
-      setFeedback('Upload complete. Parents can now browse this in the gallery.')
-      setActiveTab('feed')
-    } catch (error) {
-      setFeedback(error instanceof Error ? error.message : 'Upload failed unexpectedly.')
     }
+
+    await refreshRecords()
+    setUploadCandidates([])
+    setSelectedUploadTags([])
+    setFileInputResetKey((value) => value + 1)
+    setActiveTab('feed')
+
+    if (failedUploads.length === 0) {
+      setFeedback(`Upload fuldført: ${successCount} fil(er) udgivet.`)
+      return
+    }
+
+    setFeedback(
+      `Uploadet ${successCount}/${uploadCandidates.length}. Fejlede filer: ${failedUploads.join(' | ')}`,
+    )
   }
 
   async function handleClearIndex(): Promise<void> {
     try {
       await clearGalleryIndex()
       await refreshRecords()
-      setFeedback('Local gallery index cleared. Metadata will be rebuilt from encrypted records.')
+      setFeedback('Lokalt galleriindeks ryddet. Metadata opbygges igen fra krypterede poster.')
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : 'Failed to clear local gallery index.')
+      setFeedback(error instanceof Error ? error.message : 'Kunne ikke rydde lokalt galleriindeks.')
     }
-  }
-
-  function handlePassphraseInputChange(value: string): void {
-    resetPreviewState()
-    setPassphrase(value)
   }
 
   function handleSortOptionChange(value: SortOption): void {
@@ -576,59 +709,107 @@ function App() {
     setVisibleCount(INITIAL_VISIBLE_COUNT)
   }
 
-  function handleFromDateFilterChange(value: string): void {
-    setFromDateFilter(value)
+  function handleGalleryTagToggle(tag: string): void {
+    setActiveTagFilters((current) => toggleTag(current, tag))
     setVisibleCount(INITIAL_VISIBLE_COUNT)
   }
 
-  function handleToDateFilterChange(value: string): void {
-    setToDateFilter(value)
-    setVisibleCount(INITIAL_VISIBLE_COUNT)
+  function handleUploadTagToggle(tag: string): void {
+    setSelectedUploadTags((current) => toggleTag(current, tag))
   }
 
-  function handleLocationFilterChange(value: string): void {
-    setLocationFilter(value)
-    setVisibleCount(INITIAL_VISIBLE_COUNT)
-  }
+  async function handleFileSelection(fileList: FileList | null): Promise<void> {
+    const files = Array.from(fileList ?? [])
+    setFeedback('')
 
-  function handleTagsFilterChange(value: string): void {
-    setTagsFilter(value)
-    setVisibleCount(INITIAL_VISIBLE_COUNT)
-  }
-
-  async function handleFileSelection(file: File | null): Promise<void> {
-    setSelectedFile(file)
-    if (!file || !file.type.startsWith('image/')) {
+    if (files.length === 0) {
+      setUploadCandidates([])
       return
     }
 
-    try {
-      const parsed = (await exifr.parse(file, {
-        pick: ['DateTimeOriginal', 'CreateDate', 'latitude', 'longitude'],
-      })) as ParsedExif | null
+    const attemptId = ++fileSelectionAttemptRef.current
+    const extractedCandidates = await Promise.all(
+      files.map(async (file, index) => {
+        const extracted = await extractAutoMetadata(file)
+        return {
+          id: buildUploadCandidateId(file, index),
+          file,
+          metadata: extracted.metadata,
+          warning: extracted.warning,
+        } satisfies UploadCandidate
+      }),
+    )
 
-      if (!parsed) {
-        return
-      }
-
-      const candidateDate = parsed.DateTimeOriginal ?? parsed.CreateDate
-      if (candidateDate instanceof Date && !Number.isNaN(candidateDate.getTime())) {
-        setCaptureAtInput(toDateTimeLocalInputValue(candidateDate))
-      }
-
-      if (typeof parsed.latitude === 'number' && Number.isFinite(parsed.latitude)) {
-        setLocationLatInput(parsed.latitude.toFixed(6))
-      }
-      if (typeof parsed.longitude === 'number' && Number.isFinite(parsed.longitude)) {
-        setLocationLngInput(parsed.longitude.toFixed(6))
-      }
-    } catch (error) {
-      setFeedback(
-        error instanceof Error
-          ? `EXIF parsing failed: ${error.message}`
-          : 'EXIF parsing failed. You can still enter metadata manually.',
-      )
+    if (attemptId !== fileSelectionAttemptRef.current) {
+      return
     }
+
+    setUploadCandidates(extractedCandidates)
+
+    if (extractedCandidates.some((candidate) => candidate.warning)) {
+      setFeedback(
+        'Valgte filer er klar. Nogle filer havde begrænset metadata-udtræk og bruger filstandarder.',
+      )
+      return
+    }
+
+    setFeedback(`Valgt ${extractedCandidates.length} fil(er). Metadata er udtrukket hvor muligt.`)
+  }
+
+  if (authState !== 'unlocked') {
+    return (
+      <div className="app-shell">
+        <header className="topbar">
+          <div>
+            <h1>Spejderbilleder</h1>
+            <p className="subtitle">Privatlivsfokuseret aktivitetsfeed for forældre og spejderledere.</p>
+          </div>
+          <div className="badges">
+            <span className="badge">Lager: {configuredBackend}</span>
+            <span className="badge">Poster: {records.length}</span>
+          </div>
+        </header>
+
+        <aside className="security-banner">{backendNotice()}</aside>
+
+        <section className="panel auth-panel">
+          <h2>Lås gruppens medier op</h2>
+          <p className="fine-print">
+            Indtast den fælles gruppeadgangskode for at åbne galleri- og uploadsiderne.
+          </p>
+          <form className="form" onSubmit={(event) => void handlePassphraseSubmit(event)}>
+            <label>
+              Gruppeadgangskode
+              <input
+                type="password"
+                value={passphraseInput}
+                onChange={(event) => setPassphraseInput(event.target.value)}
+                minLength={8}
+                required
+                placeholder="Minimum 8 tegn"
+              />
+            </label>
+            <button type="submit" disabled={!recordsLoaded || authState === 'validating'}>
+              {authState === 'validating' ? 'Kontrollerer adgangskode...' : 'Lås op'}
+            </button>
+          </form>
+          {passphraseError ? <p className="feedback feedback--error">{passphraseError}</p> : null}
+          {!recordsLoaded ? (
+            <p className="fine-print">Indlæser krypterede poster…</p>
+          ) : records.length === 0 ? (
+            <p className="fine-print">
+              Ingen poster fundet endnu. En hvilken som helst adgangskode kan initialisere dette galleri.
+            </p>
+          ) : (
+            <p className="fine-print">
+              {records.length} krypterede post(er) fundet. Adgangskoden skal matche alle eksisterende poster.
+            </p>
+          )}
+          {feedback ? <p className="feedback">{feedback}</p> : null}
+        </section>
+        <p className="app-footnote">Grenreference: {branchReference}</p>
+      </div>
+    )
   }
 
   return (
@@ -636,12 +817,12 @@ function App() {
       <header className="topbar">
         <div>
           <h1>Spejderbilleder</h1>
-          <p className="subtitle">Privacy-first activity feed for parents and scout leaders.</p>
+          <p className="subtitle">Privatlivsfokuseret aktivitetsfeed for forældre og spejderledere.</p>
         </div>
         <div className="badges">
-          <span className="badge">Backend: {configuredBackend}</span>
-          <span className="badge">Records: {records.length}</span>
-          <span className="badge">Visible: {filteredAndSortedItems.length}</span>
+          <span className="badge">Lager: {configuredBackend}</span>
+          <span className="badge">Poster: {records.length}</span>
+          <span className="badge">Synlige: {filteredAndSortedItems.length}</span>
         </div>
       </header>
 
@@ -653,14 +834,14 @@ function App() {
           className={activeTab === 'feed' ? 'tab is-active' : 'tab'}
           onClick={() => setActiveTab('feed')}
         >
-          Parent gallery
+          Forældregalleri
         </button>
         <button
           type="button"
           className={activeTab === 'upload' ? 'tab is-active' : 'tab'}
           onClick={() => setActiveTab('upload')}
         >
-          Leader upload
+          Lederupload
         </button>
       </nav>
 
@@ -668,85 +849,103 @@ function App() {
         <section className="panel">
           <div className="panel-toolbar">
             <label>
-              Group passphrase
-              <input
-                type="password"
-                value={passphrase}
-                onChange={(event) => handlePassphraseInputChange(event.target.value)}
-                placeholder="Required to decrypt feed metadata"
-              />
-            </label>
-            <label>
-              Sort by
+              Sorter efter dato
               <select
                 value={sortOption}
                 onChange={(event) => handleSortOptionChange(event.target.value as SortOption)}
               >
-                <option value="captured-desc">Capture date (newest)</option>
-                <option value="captured-asc">Capture date (oldest)</option>
-                <option value="uploaded-desc">Upload date (newest)</option>
-                <option value="uploaded-asc">Upload date (oldest)</option>
-                <option value="title-asc">Title (A-Z)</option>
-                <option value="location-asc">Location (A-Z)</option>
+                <option value="date-desc">Nyeste først</option>
+                <option value="date-asc">Ældste først</option>
               </select>
             </label>
-            <label>
-              From
-              <input
-                type="datetime-local"
-                value={fromDateFilter}
-                onChange={(event) => handleFromDateFilterChange(event.target.value)}
-              />
-            </label>
-            <label>
-              To
-              <input
-                type="datetime-local"
-                value={toDateFilter}
-                onChange={(event) => handleToDateFilterChange(event.target.value)}
-              />
-            </label>
-            <label>
-              Location
-              <input
-                value={locationFilter}
-                onChange={(event) => handleLocationFilterChange(event.target.value)}
-                placeholder="Filter by location name"
-              />
-            </label>
-            <label>
-              Tags (comma separated)
-              <input
-                list="gallery-tags"
-                value={tagsFilter}
-                onChange={(event) => handleTagsFilterChange(event.target.value)}
-                placeholder="campfire, sunset"
-              />
-              <datalist id="gallery-tags">
-                {availableTags.map((tag) => (
-                  <option key={tag} value={tag} />
-                ))}
-              </datalist>
-            </label>
+            <div>
+              <p className="toggle-heading">Tags</p>
+              <div className="tag-row">
+                {SCOUT_TAGS.map((tag) => {
+                  const isActive = activeTagFilters.includes(tag)
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      className={isActive ? 'tag-toggle is-active' : 'tag-toggle'}
+                      onClick={() => handleGalleryTagToggle(tag)}
+                    >
+                      {tag}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
             <button type="button" onClick={() => void refreshRecords()}>
-              Refresh
+              Opdater
             </button>
             <button type="button" onClick={() => void handleClearIndex()}>
-              Clear local index
+              Ryd lokalt indeks
             </button>
           </div>
 
           {indexingProgress ? (
             <p className="fine-print">
-              Building gallery index {indexingProgress.processed}/{indexingProgress.total}...
+              Opbygger galleriindeks {indexingProgress.processed}/{indexingProgress.total}...
             </p>
+          ) : null}
+
+          {detailsItem && !detailsItem.lockedReason ? (
+            <aside className="details-panel">
+              <div className="details-panel__header">
+                <h2>Foto/video-detaljer</h2>
+                <button type="button" onClick={() => setDetailsMediaId(null)}>
+                  Luk
+                </button>
+              </div>
+              <p>
+                <strong>Aktivitet:</strong> {detailsItem.eventId}
+              </p>
+              <p>
+                <strong>Uploader:</strong> {detailsItem.uploaderId}
+              </p>
+              <p>
+                <strong>Uploadet:</strong> {new Date(detailsItem.uploadedAtIso).toLocaleString()}
+              </p>
+              <p>
+                <strong>Optaget:</strong>{' '}
+                {detailsItem.captureAtIso ? new Date(detailsItem.captureAtIso).toLocaleString() : 'Ukendt'}
+              </p>
+              <p>
+                <strong>Fil:</strong> {detailsItem.fileName ?? 'Ukendt fil'}
+              </p>
+              <p>
+                <strong>Type:</strong> {detailsItem.mimeType ?? 'Ukendt type'}
+              </p>
+              <p>
+                <strong>Størrelse:</strong>{' '}
+                {typeof detailsItem.fileSizeBytes === 'number'
+                  ? formatBytes(detailsItem.fileSizeBytes)
+                  : 'Ukendt størrelse'}
+              </p>
+              <p>
+                <strong>Sted:</strong> {detailsItem.locationLabel ?? 'Ukendt'}
+              </p>
+              <p>
+                <strong>Koordinater:</strong>{' '}
+                {typeof detailsItem.locationLat === 'number' && typeof detailsItem.locationLng === 'number'
+                  ? `${detailsItem.locationLat.toFixed(6)}, ${detailsItem.locationLng.toFixed(6)}`
+                  : 'Ukendt'}
+              </p>
+              <p>
+                <strong>Tags:</strong> {detailsItem.tags.length > 0 ? detailsItem.tags.join(', ') : 'Ingen tags'}
+              </p>
+              <p className={detailsItem.signatureValid ? 'signature-ok' : 'signature-warning'}>
+                Signatur: {detailsItem.signatureValid ? 'verificeret' : 'ugyldig'}
+              </p>
+            </aside>
           ) : null}
 
           <div className="gallery">
             {visibleItems.length === 0 ? (
               <article className="gallery-card">
-                <h2>No matching activity</h2>
-                <p>Try adjusting filters or upload media from the “Leader upload” tab.</p>
+                <h2>Ingen matchende aktiviteter</h2>
+                <p>Prøv at justere tags eller upload medier fra fanen “Lederupload”.</p>
               </article>
             ) : (
               visibleItems.map((item) => {
@@ -759,7 +958,7 @@ function App() {
                   <article className="gallery-card" key={item.mediaId}>
                     {item.lockedReason ? (
                       <div className="preview-box preview-box--locked">
-                        <h3>Encrypted item</h3>
+                        <h3>Krypteret element</h3>
                         <p>{item.lockedReason}</p>
                       </div>
                     ) : (
@@ -767,52 +966,40 @@ function App() {
                         {isImage && previewUrl ? (
                           <img
                             src={previewUrl}
-                            alt={item.title ?? item.fileName ?? 'Uploaded image'}
+                            alt={item.title ?? item.fileName ?? 'Uploadet billede'}
                             loading="lazy"
                           />
                         ) : isImage && isLoadingPreview ? (
-                          <p>Loading preview...</p>
+                          <p>Indlæser forhåndsvisning...</p>
                         ) : isImage && previewError ? (
                           <>
                             <p>{previewError}</p>
                             <button type="button" onClick={() => void loadPreview(item.mediaId)}>
-                              Retry preview
+                              Prøv igen
                             </button>
                           </>
                         ) : isImage ? (
                           <button type="button" onClick={() => void loadPreview(item.mediaId)}>
-                            Load preview
+                            Indlæs forhåndsvisning
                           </button>
                         ) : (
-                          <p>Preview for this media type is not available yet.</p>
+                          <p>Forhåndsvisning for denne filtype er ikke tilgængelig endnu.</p>
                         )}
                       </div>
                     )}
 
                     <div className="card-meta">
-                      <span>{new Date(item.uploadedAtIso).toLocaleString()}</span>
-                      <span>Event: {item.eventId}</span>
-                      <span>Uploader: {item.uploaderId}</span>
+                      <span>{new Date(preferredTimestamp(item)).toLocaleString()}</span>
                     </div>
 
-                    <h2>{item.title ?? 'Encrypted item'}</h2>
+                    <h2>{item.title ?? 'Krypteret element'}</h2>
                     {item.caption ? <p>{item.caption}</p> : null}
 
-                    <p className="fine-print">
-                      {item.fileName ?? 'Unknown file'} · {item.mimeType ?? 'Unknown type'} ·{' '}
-                      {typeof item.fileSizeBytes === 'number' ? formatBytes(item.fileSizeBytes) : 'Unknown size'}
-                    </p>
-
-                    <p className="fine-print">
-                      Capture: {item.captureAtIso ? new Date(item.captureAtIso).toLocaleString() : 'Unknown'}
-                    </p>
-                    <p className="fine-print">Location: {item.locationLabel ?? 'Unknown'}</p>
-                    <p className="fine-print">
-                      Tags: {item.tags.length > 0 ? item.tags.join(', ') : 'No tags'}
-                    </p>
-                    <p className={item.signatureValid ? 'signature-ok' : 'signature-warning'}>
-                      Signature: {item.signatureValid ? 'verified' : 'invalid'}
-                    </p>
+                    {!item.lockedReason ? (
+                      <button type="button" onClick={() => setDetailsMediaId(item.mediaId)}>
+                        Detaljer
+                      </button>
+                    ) : null}
                   </article>
                 )
               })
@@ -822,16 +1009,18 @@ function App() {
           {visibleCount < filteredAndSortedItems.length ? (
             <div className="load-more-row">
               <button type="button" onClick={() => setVisibleCount((count) => count + VISIBLE_INCREMENT)}>
-                Load more photos
+                Indlæs flere billeder
               </button>
             </div>
           ) : null}
+
+          {feedback ? <p className="feedback">{feedback}</p> : null}
         </section>
       ) : (
         <section className="panel">
           <form className="form" onSubmit={(event) => void handleUploadSubmit(event)}>
             <label>
-              Role
+              Rolle
               <select
                 value={role}
                 onChange={(event) => {
@@ -841,112 +1030,90 @@ function App() {
                   }
                 }}
               >
-                <option value="leader">leader</option>
-                <option value="parent">parent</option>
+                <option value="leader">leder</option>
+                <option value="parent">forælder</option>
               </select>
             </label>
             <label>
-              Uploader ID
+              Uploader-id
               <input
                 value={uploaderId}
                 onChange={(event) => setUploaderId(event.target.value)}
+                placeholder="fx leder-lars"
                 required
               />
             </label>
+
+            <div>
+              <p className="toggle-heading">Upload-tags</p>
+              <div className="tag-row">
+                {SCOUT_TAGS.map((tag) => {
+                  const isActive = selectedUploadTags.includes(tag)
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      className={isActive ? 'tag-toggle is-active' : 'tag-toggle'}
+                      onClick={() => handleUploadTagToggle(tag)}
+                    >
+                      {tag}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
             <label>
-              Event title
-              <input
-                value={eventTitle}
-                onChange={(event) => setEventTitle(event.target.value)}
-                required
-              />
-            </label>
-            <label>
-              Post title
-              <input value={title} onChange={(event) => setTitle(event.target.value)} required />
-            </label>
-            <label>
-              Caption
-              <textarea
-                value={caption}
-                onChange={(event) => setCaption(event.target.value)}
-                rows={4}
-                required
-              />
-            </label>
-            <label>
-              Capture date/time
-              <input
-                type="datetime-local"
-                value={captureAtInput}
-                onChange={(event) => setCaptureAtInput(event.target.value)}
-              />
-            </label>
-            <label>
-              Location label
-              <input
-                value={locationLabel}
-                onChange={(event) => setLocationLabel(event.target.value)}
-                placeholder="Shelter by the lake"
-              />
-            </label>
-            <label>
-              Latitude
-              <input
-                type="number"
-                step="0.000001"
-                value={locationLatInput}
-                onChange={(event) => setLocationLatInput(event.target.value)}
-                placeholder="55.676098"
-              />
-            </label>
-            <label>
-              Longitude
-              <input
-                type="number"
-                step="0.000001"
-                value={locationLngInput}
-                onChange={(event) => setLocationLngInput(event.target.value)}
-                placeholder="12.568337"
-              />
-            </label>
-            <label>
-              Tags (comma separated)
-              <input
-                value={tagsInput}
-                onChange={(event) => setTagsInput(event.target.value)}
-                placeholder="campfire, songs, sunset"
-              />
-            </label>
-            <label>
-              Group passphrase
-              <input
-                type="password"
-                value={passphrase}
-                onChange={(event) => handlePassphraseInputChange(event.target.value)}
-                minLength={8}
-                required
-              />
-            </label>
-            <label>
-              Photo or video
+              Fotos eller videoer
               <input
                 key={fileInputResetKey}
                 type="file"
                 accept="image/*,video/*"
-                onChange={(event) => {
-                  const nextFile = event.target.files?.[0] ?? null
-                  void handleFileSelection(nextFile)
-                }}
+                multiple
+                onChange={(event) => void handleFileSelection(event.target.files)}
                 required
               />
             </label>
-            <button type="submit">Encrypt and publish</button>
+
+            {uploadCandidates.length > 0 ? (
+              <div className="candidate-list">
+                <p className="toggle-heading">Registreret metadata</p>
+                <div className="candidate-list__items">
+                  {uploadCandidates.map((candidate) => (
+                    <article key={candidate.id} className="candidate-card">
+                      <p>
+                        <strong>{candidate.file.name}</strong>
+                      </p>
+                      <p>
+                        <strong>Titel:</strong> {candidate.metadata.title}
+                      </p>
+                      <p>
+                        <strong>Optaget:</strong>{' '}
+                        {candidate.metadata.captureAtIso
+                          ? new Date(candidate.metadata.captureAtIso).toLocaleString()
+                          : 'Ukendt'}
+                      </p>
+                      <p>
+                        <strong>Koordinater:</strong>{' '}
+                        {typeof candidate.metadata.locationLat === 'number' &&
+                        typeof candidate.metadata.locationLng === 'number'
+                          ? `${candidate.metadata.locationLat.toFixed(6)}, ${candidate.metadata.locationLng.toFixed(6)}`
+                          : 'Ukendt'}
+                      </p>
+                      {candidate.warning ? <p className="fine-print">{candidate.warning}</p> : null}
+                    </article>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <button type="submit">Krypter og udgiv valgte filer</button>
           </form>
 
           {feedback ? <p className="feedback">{feedback}</p> : null}
         </section>
       )}
+      <p className="app-footnote">Grenreference: {branchReference}</p>
     </div>
   )
 }

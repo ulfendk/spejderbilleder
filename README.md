@@ -8,13 +8,17 @@ Privacy-first photo/video sharing for scouting groups.
 - Browser-side encryption for media metadata and chunks (`AES-GCM`).
 - Per-upload file key wrapped by a passphrase-derived group key (`PBKDF2 + AES-KW`).
 - Signed manifests (`ECDSA P-256`) so clients can verify uploader authenticity.
+- Login-style passphrase gate before accessing gallery/upload workflows.
 - Parent gallery view with:
   - image preview decryption (on-demand),
-  - sorting and filtering by date/time, location and tags,
+  - date sorting (newest/oldest),
+  - fixed tag toggles (`Bævere`, `Ulve`, `Stifindere`, `Spejdere`, `Pionerer`, `Rovere`, `Ledere`, `Forældre`),
+  - per-item details panel for technical metadata/signature status,
   - local IndexedDB gallery index for faster browsing of large record sets.
-- Leader upload metadata enhancements:
-  - optional capture time, location, and tags,
-  - EXIF-assisted prefill for image capture timestamp and GPS coordinates.
+- Leader upload workflow with:
+  - bulk upload (`multiple` file picker),
+  - predefined tag toggles (same fixed tag set),
+  - metadata extraction/fallback from selected files (capture timestamp/GPS when available).
 - Pluggable storage backend selection:
   - `mock` (default): encrypted records in browser localStorage.
   - `s3-signer`: expects a private backend API to persist encrypted records.
@@ -48,6 +52,8 @@ Create `.env.local`:
 VITE_STORAGE_BACKEND=mock
 # Optional when VITE_STORAGE_BACKEND=s3-signer:
 VITE_SIGNER_API_BASE=/api
+# Optional branch reference shown as a UI footnote:
+VITE_BRANCH_REF=main
 ```
 
 Valid `VITE_STORAGE_BACKEND` values:
