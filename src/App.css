@@ -70,6 +70,23 @@ h1 {
   transform: translateY(0);
 }
 
+.logout-button {
+  background: transparent;
+  border: 1px solid var(--ravn-red);
+  color: var(--ravn-red);
+  padding: 0.28rem 0.72rem;
+  font-size: 0.84rem;
+  font-weight: 700;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.logout-button:hover {
+  background: var(--ravn-red);
+  color: var(--ravn-white);
+}
+
 .security-banner {
   background: var(--ravn-yellow-soft);
   border: 1px solid #cfb62d;

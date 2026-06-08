@@ -766,6 +766,16 @@ function App() {
     setVisibleCount(INITIAL_VISIBLE_COUNT)
   }
 
+  function handleLogout(): void {
+    setSessionPassphrase('')
+    setAuthState('locked')
+    setGalleryItems([])
+    setDetailsMediaId(null)
+    setLightboxMediaId(null)
+    resetPreviewState()
+    setActiveTab('feed')
+  }
+
   function handleUploadTagToggle(tag: string): void {
     setSelectedUploadTags((current) => toggleTag(current, tag))
   }
@@ -902,6 +912,9 @@ function App() {
           </span>
           <span className="badge">Poster: {records.length}</span>
           <span className="badge">Synlige: {filteredAndSortedItems.length}</span>
+          <button type="button" className="logout-button" onClick={handleLogout}>
+            Log ud
+          </button>
         </div>
       </header>
 
