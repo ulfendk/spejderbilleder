@@ -736,6 +736,14 @@ function App() {
   }
 
   async function handleClearIndex(): Promise<void> {
+    const confirmed = window.confirm(
+      'Er du sikker på, at du vil rydde det lokale lager?\n\nDette vil slette alle cachelagrede data, og metadata skal opbygges igen.'
+    )
+    
+    if (!confirmed) {
+      return
+    }
+
     try {
       await clearGalleryIndex()
       if (configuredBackend === 'mock') {
@@ -756,6 +764,16 @@ function App() {
   function handleGalleryTagToggle(tag: string): void {
     setActiveTagFilters((current) => toggleTag(current, tag))
     setVisibleCount(INITIAL_VISIBLE_COUNT)
+  }
+
+  function handleLogout(): void {
+    setSessionPassphrase('')
+    setAuthState('locked')
+    setGalleryItems([])
+    setDetailsMediaId(null)
+    setLightboxMediaId(null)
+    resetPreviewState()
+    setActiveTab('feed')
   }
 
   function handleUploadTagToggle(tag: string): void {
@@ -883,9 +901,20 @@ function App() {
           <p className="subtitle">Privatlivsfokuseret aktivitetsfeed for forældre og spejderledere.</p>
         </div>
         <div className="badges">
-          <span className="badge">Lager: {configuredBackend}</span>
+          <span
+            className={configuredBackend === 'mock' ? 'badge badge--clickable' : 'badge'}
+            onClick={configuredBackend === 'mock' ? () => void handleClearIndex() : undefined}
+            role={configuredBackend === 'mock' ? 'button' : undefined}
+            tabIndex={configuredBackend === 'mock' ? 0 : undefined}
+            title={configuredBackend === 'mock' ? 'Klik for at rydde lokalt lager' : undefined}
+          >
+            Lager: {configuredBackend}
+          </span>
           <span className="badge">Poster: {records.length}</span>
           <span className="badge">Synlige: {filteredAndSortedItems.length}</span>
+          <button type="button" className="logout-button" onClick={handleLogout}>
+            Log ud
+          </button>
         </div>
       </header>
 
@@ -911,17 +940,30 @@ function App() {
       {activeTab === 'feed' ? (
         <section className="panel">
           <div className="panel-toolbar">
-            <label>
-              Sorter efter dato
-              <select
-                value={sortOption}
-                onChange={(event) => handleSortOptionChange(event.target.value as SortOption)}
+            <div className="toolbar-row">
+              <label>
+                Sorter efter dato
+                <select
+                  value={sortOption}
+                  onChange={(event) => handleSortOptionChange(event.target.value as SortOption)}
+                >
+                  <option value="date-desc">Nyeste først</option>
+                  <option value="date-asc">Ældste først</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => void refreshRecords()}
+                aria-label="Opdater"
+                title="Opdater"
               >
-                <option value="date-desc">Nyeste først</option>
-                <option value="date-asc">Ældste først</option>
-              </select>
-            </label>
-            <div>
+                <svg className="icon" aria-hidden="true">
+                  <use href="/icons.svg#refresh-icon" />
+                </svg>
+              </button>
+            </div>
+            <div className="toolbar-row">
               <p className="toggle-heading">Tags</p>
               <div className="tag-row">
                 {SCOUT_TAGS.map((tag) => {
@@ -939,14 +981,6 @@ function App() {
                 })}
               </div>
             </div>
-            <button type="button" onClick={() => void refreshRecords()}>
-              Opdater
-            </button>
-            {configuredBackend === 'mock' ? (
-              <button type="button" onClick={() => void handleClearIndex()}>
-                Ryd lokalt lager
-              </button>
-            ) : null}
           </div>
 
           {indexingProgress ? (
