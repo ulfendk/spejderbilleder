@@ -287,16 +287,6 @@ function App() {
     [detailsMediaId, galleryItemByMediaId],
   )
 
-  const lightboxItem = useMemo(
-    () => (lightboxMediaId ? galleryItemByMediaId.get(lightboxMediaId) : undefined),
-    [lightboxMediaId, galleryItemByMediaId],
-  )
-
-  const lightboxIndex = useMemo(
-    () => (lightboxMediaId ? filteredAndSortedItems.findIndex((item) => item.mediaId === lightboxMediaId) : -1),
-    [lightboxMediaId, filteredAndSortedItems],
-  )
-
   const revokePreviewUrls = useCallback(() => {
     for (const url of previewUrlMapRef.current.values()) {
       URL.revokeObjectURL(url)
@@ -583,6 +573,16 @@ function App() {
       return preferredTimestamp(right).localeCompare(preferredTimestamp(left))
     })
   }, [activeTagFilters, galleryItems, sortOption])
+
+  const lightboxItem = useMemo(
+    () => (lightboxMediaId ? galleryItemByMediaId.get(lightboxMediaId) : undefined),
+    [lightboxMediaId, galleryItemByMediaId],
+  )
+
+  const lightboxIndex = useMemo(
+    () => (lightboxMediaId ? filteredAndSortedItems.findIndex((item) => item.mediaId === lightboxMediaId) : -1),
+    [lightboxMediaId, filteredAndSortedItems],
+  )
 
   const visibleItems = useMemo(
     () => filteredAndSortedItems.slice(0, visibleCount),
