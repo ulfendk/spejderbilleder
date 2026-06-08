@@ -911,17 +911,27 @@ function App() {
       {activeTab === 'feed' ? (
         <section className="panel">
           <div className="panel-toolbar">
-            <label>
-              Sorter efter dato
-              <select
-                value={sortOption}
-                onChange={(event) => handleSortOptionChange(event.target.value as SortOption)}
-              >
-                <option value="date-desc">Nyeste først</option>
-                <option value="date-asc">Ældste først</option>
-              </select>
-            </label>
-            <div>
+            <div className="toolbar-row">
+              <label>
+                Sorter efter dato
+                <select
+                  value={sortOption}
+                  onChange={(event) => handleSortOptionChange(event.target.value as SortOption)}
+                >
+                  <option value="date-desc">Nyeste først</option>
+                  <option value="date-asc">Ældste først</option>
+                </select>
+              </label>
+              <button type="button" onClick={() => void refreshRecords()}>
+                Opdater
+              </button>
+              {configuredBackend === 'mock' ? (
+                <button type="button" onClick={() => void handleClearIndex()}>
+                  Ryd lokalt lager
+                </button>
+              ) : null}
+            </div>
+            <div className="toolbar-row">
               <p className="toggle-heading">Tags</p>
               <div className="tag-row">
                 {SCOUT_TAGS.map((tag) => {
@@ -939,14 +949,6 @@ function App() {
                 })}
               </div>
             </div>
-            <button type="button" onClick={() => void refreshRecords()}>
-              Opdater
-            </button>
-            {configuredBackend === 'mock' ? (
-              <button type="button" onClick={() => void handleClearIndex()}>
-                Ryd lokalt lager
-              </button>
-            ) : null}
           </div>
 
           {indexingProgress ? (
